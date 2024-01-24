@@ -27,7 +27,7 @@
     <h2>状态</h2>
     <div id="status"></div>
     <h2>抓拍</h2>
-    <div class="snap"></div>
+    <div id="snapDiv"></div>
     <h2>TimeLine</h2>
     <div id="image-container1"></div>
     <h2>images of detction</h2>
@@ -67,7 +67,7 @@
                 .then(response => response.json())
                 .then(data => {
                     const statusEl = document.getElementById('status')
-                    if (localStatus) {
+                    if (data.status === 'true') {
                         statusEl.innerText = '启动'
                     } else {
                         statusEl.innerText = '关闭'
@@ -101,7 +101,7 @@
                 .then(data => {
                     const img = document.createElement('img');
                     img.src = `data:image/jpeg;base64,${data.img}`;
-                    document.getElementById('snap').appendChild(img);
+                    document.getElementById('snapDiv').appendChild(img);
                 })
                 .catch(error => console.error('Error:', error));
         }, 3000))
@@ -111,6 +111,8 @@
         getImgDate('/timeline', 'image-container1')
         // 获取保存的检测照片
         getImgDate('/yolo', 'image-container')
+        // 获取状态
+        getStatus()
 
 
     </script>

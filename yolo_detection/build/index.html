@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>图片展示</title>
+</head>
+
+<body>
+    <h2>TimeLine</h2>
+    <div id="image-container1"></div>
+    <h2>images of detction</h2>
+    <div id="image-container"></div>
+
+    <script>
+        function getImgDate(url, id) {
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    data.imagesToFront.forEach(base64String => {
+                        const img = document.createElement('img');
+                        img.src = `data:image/jpeg;base64,${base64String}`;
+                        document.getElementById(id).appendChild(img);
+                    });
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        // 获取时间线照片
+        getImgDate('/timeline', 'image-container1')
+        // 获取保存的检测照片
+        getImgDate('/yolo', 'image-container')
+    </script>
+</body>
+
+</html>

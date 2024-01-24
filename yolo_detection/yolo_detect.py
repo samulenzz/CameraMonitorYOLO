@@ -4,163 +4,314 @@ import time
 import json
 import os
 from datetime import datetime, timedelta
+import threading
 
 import urllib.parse
 import urllib.request
 
-# 第三方服务server酱推送
+weights_path = "./path/yolov3.weights"
+cfg_path = "./path/yolov3.cfg"
+result_path = "result"
+
+# 需要配置，工作时间，以小时为单位，例如[8, 10]代表8点开始，10点结束
+work_time = [[6, 10], [12, 15]]
+# 抓拍时间间隔，默认工作期间开始抓拍
+snap_gap = 10 * 60 
+
 KEY = ''  # server酱的key
-def sc_send(text, desp='', key='[SENDKEY]'):
-    postdata = urllib.parse.urlencode({'text': text, 'desp': desp}).encode('utf-8')
-    url = f'https://sctapi.ftqq.com/{key}.send'
-    req = urllib.request.Request(url, data=postdata, method='POST')
-    with urllib.request.urlopen(req) as response:
-        result = response.read().decode('utf-8')
-    return result
+
+class Yolo_detector:
+    def __init__(self) -> None:
+        # 初始化变量
+        self.date = None
+        self.new_day = False
+        '''
+            {
+                'timeline':{
+                    'timestamp':'file/path'
+                },
+                'detected':{
+                    'timestamp':'file/path'
+                }
+            }
+        '''
+        self.json_dict = {}
+        self.is_started = False
+        self.mutex = threading.Lock()
+        self.thread = None
+        self.main_loop_running = False
+        # 上次状态更新时间, 开始默认为0点
+        self.last_time = self._get_timestamp_hour(0)
+        # 上次抓拍时间
+        self.last_snap_time = self._get_timestamp_hour(0)
 
 
-# 保存图片，将时间戳保存在缩放后的图片上
-def save_img(img, jsonSavePath):
-    # 获取当前时间戳，用作图片名称
-    timestamp = time.time()
-    pic_path = str(timestamp)+'.jpg'
-    # 将时间戳转换为可阅读的形式
-    readable_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+        # 加载模型并创建文件夹
+        self._load_model()
+        self._create_result_dir()
+
+        self._date_check()
+        self._run()
+
+    # 设置开启
+    def set_start(self):
+        self._set_status(True)
+
+    # 设置关闭
+    def set_stop(self):
+        self._set_status(False)
+
+    # 状态查询
+    def get_status(self):
+        return self.is_started
+
+    def cap_now(self):
+        if not self.is_started:
+            self._start()
+        ret, img = self.cap_once()
+        if type(img) == type(None):
+            return None
+        p = self.save_img(img, jsonSavePath='timeline')
+        if not self.is_started:
+            self._stop()
+        return p
+
+    # 程序启动,创建线程执行主循环
+    def _run(self):
+        if self.thread == None:
+            self._update_status()
+            self.main_loop_running = True
+            self.thread = threading.Thread(target=self._main_loop)
+            self.thread.daemon = True
+            self.thread.start()
     
-    # 缩放
-    scaled_image = cv2.resize(img, (width // 4, height // 4))
+    # 终止主循环
+    def _exit(self):
+        self.main_loop_running = False
+
+    def _load_model(self):
+        self.net = cv2.dnn.readNet(weights_path, cfg_path)
+        self.layer_names = self.net.getLayerNames()
+        self.output_layers = [self.layer_names[i-1] for i in self.net.getUnconnectedOutLayers()]   
+
+        # 加载coco.names类别文件
+        with open("./path/coco.names", "r") as f:
+            self.classes = [line.strip() for line in f.readlines()]
+        self.colors = np.random.uniform(0, 255, size=(len(self.classes), 3))
+
     
-    # 在矩阵上添加文字
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_size = 0.5
-    font_thickness = 2
-    text_position = (0, 20)
-    text_color = (255, 255, 0)
+    def _create_result_dir(self):
+        # 如果文件夹不存在，创建
+        os.makedirs(result_path, exist_ok=True)
 
-    cv2.putText(scaled_image, readable_time, text_position, font, font_size, text_color, font_thickness)
+    # 检查是否是新的一天
+    def _date_check(self):
+        # 获取当前时间
+        current_time = datetime.now()
+
+        # 获取月份和日期，并转换为指定的字符串形式
+        month_day_string = current_time.strftime("%m-%d")
+
+        if month_day_string != self.date:
+            self.date = month_day_string
+            self.new_day = True
+            os.makedirs(os.path.join(result_path, self.date), exist_ok=True)
+            # 新的一天，新的数据结构
+            self.json_dict = {
+                'timeline':dict(),
+                'detected':dict()
+            }
+            # 重新计算工作时间，并转换为时间戳
+            self.work_time = []
+            for start_hour, end_hour in work_time:
+                self.work_time.append([self._get_timestamp_hour(start_hour),
+                                       self._get_timestamp_hour(end_hour)])
     
-    # 保存图片
-    jpeg_quality = 50
-    cv2.imwrite(os.path.join('./result', pic_path), scaled_image, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-    with open(jsonSavePath, 'r') as f:
-        data = json.load(f)
+    # 开始检测，内部成员函数，如果需要开启服务请调用set_start()
+    # 主要用于申请资源
+    def _start(self):
+        self.cap = cv2.VideoCapture(0)
     
-    with open(jsonSavePath, 'w+') as f:
-        data['timestamp'].append(timestamp)
-        data['path'].append(pic_path)
-        f.write(json.dumps(data, indent=2))
+    def _stop(self):
+        self.cap.release()
+        cv2.destroyAllWindows()
 
-# 加载YOLO模型
-net = cv2.dnn.readNet("./path/yolov3.weights", "./path/yolov3.cfg")
-layer_names = net.getLayerNames()
-output_layers = [layer_names[i[0]-1] for i in net.getUnconnectedOutLayers()]
-
-# 加载coco.names类别文件
-with open("./path/coco.names", "r") as f:
-    classes = [line.strip() for line in f.readlines()]
-colors = np.random.uniform(0, 255, size=(len(classes), 3))
-
-# 初始化json
-with open('./result/results.json', 'w+') as f:
-    data = {"timestamp":[],"path": []}
-    f.write(json.dumps(data, indent=2))
+    # 自动更新当前状态, 多线程下需要互斥运行
+    def _update_status(self):
+        self.mutex.acquire()
+        try:
+            next_status = self.is_started
+            t = time.time()
+            for start_time, end_time in self.work_time:
+                if start_time > self.last_time and start_time < t:
+                    next_status = True
+                
+                if end_time > self.last_time and end_time < t:
+                    next_status = False
+            if next_status != self.is_started:
+                if next_status:
+                    self._start()
+                else:
+                    self._stop()
+                
+                self.is_started = next_status
+            self.last_time = t
+        finally:
+            self.mutex.release()
     
-with open('./result/timeline.json', 'w+') as f:
-    data = {"timestamp":[],"path": []}
-    f.write(json.dumps(data, indent=2))
+    # 直接设置状态，多线程下互斥运行
+    def _set_status(self, status):
+        self.mutex.acquire()
+        try:
+            if self.is_started != status:
+                if status:
+                    self._start()
+                else:
+                    self._stop()
+                self.is_started = status
+        finally:
+            self.mutex.release()
+
+
+    def _main_loop(self):
+        while self.main_loop_running:
+            self._date_check()
+            self._update_status()
+            print(self.is_started)
+            if self.is_started:
+                ret, img = self.cap_once()
+                if type(img) == type(None):
+                    return
+                
+                if time.time() - self.last_snap_time > snap_gap:
+                    self.save_img(img, jsonSavePath='timeline')
+                    self.last_snap_time = time.time()
+                
+                if ret:
+                    self.save_img(img)
+                    # cv2.imshow('窗口', img)
+            time.sleep(0.5)
+            
+            
+                    
+        self._set_status(False)
+
+    # 返回今天指定小时整点的时间戳
+    def _get_timestamp_hour(self, hour):
+        current_date = datetime.now().date()
+
+        # 设置时间为8点
+        target_time = datetime.combine(current_date, datetime.strptime("{}:00".format(hour), "%H:%M").time())
+
+        # 获取时间戳
+        timestamp = int(target_time.timestamp())
+        return timestamp
+
+    # 第三方服务server酱推送
+    def sc_send(text, desp='', key='[SENDKEY]'):
+        postdata = urllib.parse.urlencode({'text': text, 'desp': desp}).encode('utf-8')
+        url = f'https://sctapi.ftqq.com/{key}.send'
+        req = urllib.request.Request(url, data=postdata, method='POST')
+        with urllib.request.urlopen(req) as response:
+            result = response.read().decode('utf-8')
+        return result
     
-# 早上6点才执行后续代码
-# 获取当前时间
-current_time = datetime.now()
-# 设置目标时间为晚上九点
-target_time = datetime(current_time.year, current_time.month, current_time.day, 6, 0, 0)
-# 如果当前时间已经晚于目标时间，则将目标时间设置为第二天的九点
-if current_time > target_time:
-    target_time += timedelta(days=1)
-# 计算需要等待的时间
-# wait_time = (target_time - current_time).total_seconds()
-# 在目标时间之前循环等待
-while datetime.now() < target_time:
-    pass
-# 目标时间到达后继续执行以下代码
-print("已经等待到早上6点，现在继续执行后续代码")
+    def cap_once(self):
+        if self.cap.isOpened():
+            ret, img = self.cap.read()
+            if not ret:
+                return False, None
+            
+            height, width, channels = img.shape
+            blob = cv2.dnn.blobFromImage(
+                img, 0.00392, (416, 416), (0, 0, 0), True, crop=True)
+            self.net.setInput(blob)
+            outs = self.net.forward(self.output_layers)
+
+            class_ids = []
+            confidences = []
+            boxes = []
+
+            for output in outs:
+                for detection in output:
+                    scores = detection[5:]
+                    class_id = np.argmax(scores)
+                    confidence = scores[class_id]
+                    if confidence > 0.5:
+                        # 物体坐标
+                        center_x = int(detection[0] * width)
+                        center_y = int(detection[1] * height)
+                        w = int(detection[2] * width)
+                        h = int(detection[3] * height)
+
+                        # 矩形坐标
+                        x = int(center_x - w / 2)
+                        y = int(center_y - h / 2)
+                        boxes.append([x, y, w, h])
+                        confidences.append(float(confidence))
+                        class_ids.append(class_id)
+
+            # 应用非极大值抑制
+            indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+
+            # 显示图片和bbox
+            detected = False
+            for i in range(len(boxes)):
+                if i in indexes:
+                    label = str(self.classes[class_ids[i]])
+                    if label == 'person':
+                        detected = True
+                        x, y, w, h = boxes[i]
+                        confidence = confidences[i]
+                        color = (0, 255, 0)
+                        cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
+                        cv2.putText(img, label + " " + str(round(confidence, 2)),
+                                    (x, y + 30), cv2.FONT_HERSHEY_PLAIN, 2, color, 2)
+
+            return detected, img
+
+        
+
+    # 保存图片，将时间戳保存在缩放后的图片上
+    def save_img(self, img, jsonSavePath='detected'):
+        # 获取当前时间戳，用作图片名称
+        timestamp = time.time()
+        pic_path = str(timestamp)+'.jpg'
+        # 将时间戳转换为可阅读的形式
+        readable_time = time.strftime('%H:%M:%S', time.localtime(timestamp))
+        
+        # 缩放
+        scaled_image = cv2.resize(img, (img.shape[0] // 4, img.shape[1] // 4))
+        
+        # 在矩阵上添加文字
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_size = 0.5
+        font_thickness = 2
+        text_position = (0, 20)
+        text_color = (255, 255, 0)
+
+        cv2.putText(scaled_image, readable_time, text_position, font, font_size, text_color, font_thickness)
+        
+        # 保存图片
+        jpeg_quality = 50
+        cv2.imwrite(os.path.join('./result', self.date, pic_path), scaled_image, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+        self.json_dict[jsonSavePath][timestamp] = os.path.join('./result', self.date, pic_path)
+        return os.path.join('./result', self.date, pic_path)
 
 
-# 8点之后，每20分钟存一次图像，存到9点，验证程序是否工作。
-current_time = datetime.now()
-time_to_save_start = datetime(current_time.year, current_time.month, current_time.day, 8, 0, 0)
-time_to_save_end = datetime(current_time.year, current_time.month, current_time.day, 9, 10, 0)
 
-# 只有第一次目标检测，向第三方推送提醒
-is_first_visted = True
+if __name__ == '__main__':
+    yolo = Yolo_detector()
+    # print(yolo.get_status())
+    yolo.set_start()
+    # print(yolo.get_status())
+    time.sleep(5)
+    yolo.set_stop()
+    time.sleep(10)
+    while True:
+        time.sleep(1)
+        print(yolo.is_started)
+    yolo._exit()
+    exit()
 
-# 从摄像头获取视频流
-cap = cv2.VideoCapture(0)
-while cap.isOpened():
-    ret, img = cap.read()
-    if not ret:
-        break
-    
-    now_time = datetime.now()
-    if (now_time > time_to_save_start and now_time < time_to_save_end):
-        time_to_save_start += timedelta(minutes=20)
-        save_img(img, './result/timeline.json')
-
-    height, width, channels = img.shape
-    blob = cv2.dnn.blobFromImage(
-        img, 0.00392, (416, 416), (0, 0, 0), True, crop=True)
-    net.setInput(blob)
-    outs = net.forward(output_layers)
-
-    class_ids = []
-    confidences = []
-    boxes = []
-
-    for output in outs:
-        for detection in output:
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if confidence > 0.5:
-                # 物体坐标
-                center_x = int(detection[0] * width)
-                center_y = int(detection[1] * height)
-                w = int(detection[2] * width)
-                h = int(detection[3] * height)
-
-                # 矩形坐标
-                x = int(center_x - w / 2)
-                y = int(center_y - h / 2)
-                boxes.append([x, y, w, h])
-                confidences.append(float(confidence))
-                class_ids.append(class_id)
-
-    # 应用非极大值抑制
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-
-    # 显示图片和bbox
-    detected = False
-    for i in range(len(boxes)):
-        if i in indexes:
-            label = str(classes[class_ids[i]])
-            if label == 'person':
-                detected = True
-                x, y, w, h = boxes[i]
-                confidence = confidences[i]
-                color = (0, 255, 0)
-                cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(img, label + " " + str(round(confidence, 2)),
-                            (x, y + 30), cv2.FONT_HERSHEY_PLAIN, 2, color, 2)
-
-    if detected:
-        save_img(img, './result/results.json')
-        if is_first_visted:
-            is_first_visted = False
-            sc_send('检测提醒', '仅提醒6点后第一次响应', KEY)
-
-    cv2.imshow("Image", img)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+        

@@ -7,7 +7,7 @@ from yolo_detect import *
 
 app = Flask(__name__)
 yolod = Yolo_detector()
-yolod.set_start()
+# yolod.set_start()
 
 BASE_PATH = '../yolo_detection/result/'
 

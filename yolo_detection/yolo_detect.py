@@ -5,6 +5,7 @@ import json
 import os
 from datetime import datetime, timedelta
 import threading
+import queue
 
 import urllib.parse
 import urllib.request
@@ -174,23 +175,33 @@ class Yolo_detector:
 
 
     def _main_loop(self):
+        que = queue.Queue()
         while self.main_loop_running:
-            self._date_check()
-            self._update_status()
-            print(self.is_started)
-            if self.is_started:
-                ret, img = self.cap_once()
-                if type(img) == type(None):
-                    return
-                
-                if time.time() - self.last_snap_time > snap_gap:
-                    self.save_img(img, jsonSavePath='timeline')
-                    self.last_snap_time = time.time()
-                
-                if ret:
-                    self.save_img(img)
-                    # cv2.imshow('窗口', img)
-            time.sleep(0.5)
+            try:
+                self._date_check()
+                self._update_status()
+
+                if self.is_started:
+                    ret, img = self.cap_once()
+                    if type(img) == type(None):
+                        return
+                    
+                    if time.time() - self.last_snap_time > snap_gap:
+                        self.save_img(img, jsonSavePath='timeline')
+                        self.last_snap_time = time.time()
+                    
+                    t = time.time()
+                    if ret:
+                        if que.qsize() < 10 or que.queue[0] < t - 60:
+                            self.save_img(img)
+                        
+                        que.put(t)
+                        if que.qsize() > 10:
+                            que.get()
+
+                time.sleep(0.1)
+            except Exception as e:
+                print(e)
             
             
                     

@@ -2,16 +2,52 @@
 <html>
 
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>图片展示</title>
+    <style>
+        #start {
+            background-color: aquamarine;
+        }
+
+        #end {
+            background-color: blanchedalmond;
+        }
+
+        #snap {
+            background-color: cadetblue;
+        }
+    </style>
 </head>
 
 <body>
+    <button id="start">启动</button>
+    <button id="end">停止</button>
+    <button id="snap">抓拍</button>
+    <h2>状态</h2>
+    <div id="status"></div>
+    <h2>抓拍</h2>
+    <div class="snap"></div>
     <h2>TimeLine</h2>
     <div id="image-container1"></div>
     <h2>images of detction</h2>
     <div id="image-container"></div>
 
     <script>
+        //节流函数
+        function throttle(func, delay) {
+            let lastCallTime = 0;
+
+            return function (...args) {
+                const now = new Date().getTime();
+
+                if (now - lastCallTime >= delay) {
+                    func.apply(this, args);
+                    lastCallTime = now;
+                }
+            };
+        }
+
         function getImgDate(url, id) {
             fetch(url)
                 .then(response => response.json())
@@ -25,10 +61,58 @@
                 .catch(error => console.error('Error:', error));
         }
 
+        // 获取状态
+        function getStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusEl = document.getElementById('status')
+                    if (localStatus) {
+                        statusEl.innerText = '启动'
+                    } else {
+                        statusEl.innerText = '关闭'
+                    }
+                })
+        }
+
+        // 开启服务，关闭服务
+        const startBtnEl = document.getElementById('start')
+        const endBtnEl = document.getElementById('end')
+
+        startBtnEl.addEventListener('click', throttle(() => {
+            console.log('start')
+            fetch('/start')
+            getStatus()
+        }, 3000))
+
+        endBtnEl.addEventListener('click', throttle(() => {
+            console.log('stop')
+            fetch('/stop')
+            getStatus()
+        }, 3000))
+
+        // 抓拍
+        const snapBtnEl = document.getElementById('snap')
+
+        snapBtnEl.addEventListener('click', throttle(() => {
+            console.log('snap')
+            fetch('/snap')
+                .then(response => response.json())
+                .then(data => {
+                    const img = document.createElement('img');
+                    img.src = `data:image/jpeg;base64,${data.img}`;
+                    document.getElementById('snap').appendChild(img);
+                })
+                .catch(error => console.error('Error:', error));
+        }, 3000))
+
+        // 加载页面执行的代码
         // 获取时间线照片
         getImgDate('/timeline', 'image-container1')
         // 获取保存的检测照片
         getImgDate('/yolo', 'image-container')
+
+
     </script>
 </body>
 

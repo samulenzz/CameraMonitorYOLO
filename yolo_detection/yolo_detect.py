@@ -92,6 +92,9 @@ class Yolo_detector:
 
     def _load_model(self):
         self.net = cv2.dnn.readNet(weights_path, cfg_path)
+
+        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_OPENCL)
         self.layer_names = self.net.getLayerNames()
         self.output_layers = [self.layer_names[i-1] for i in self.net.getUnconnectedOutLayers()]   
 
@@ -191,10 +194,16 @@ class Yolo_detector:
                         self.last_snap_time = time.time()
                     
                     t = time.time()
+                    # 抓拍到了
                     if ret:
+                        if self.new_day and KEY:
+                            # 先设置标志位再尝试
+                            self.new_day = False
+                            self.sc_send(key=KEY)
+
                         if que.qsize() < 10 or que.queue[0] < t - 60:
                             self.save_img(img)
-                        
+
                         que.put(t)
                         if que.qsize() > 10:
                             que.get()
@@ -292,7 +301,7 @@ class Yolo_detector:
         readable_time = time.strftime('%H:%M:%S', time.localtime(timestamp))
         
         # 缩放
-        scaled_image = cv2.resize(img, (img.shape[0] // 4, img.shape[1] // 4))
+        scaled_image = cv2.resize(img, (img.shape[1] // 4, img.shape[0] // 4))
         
         # 在矩阵上添加文字
         font = cv2.FONT_HERSHEY_SIMPLEX
